@@ -1,6 +1,12 @@
 require "plaything/version"
 require "ffi"
 
+class FFI::AbstractMemory
+  def count
+    size.div(type_size)
+  end
+end
+
 class Plaything
   module OpenAL
     extend FFI::Library
@@ -23,9 +29,10 @@ class Plaything
         end
 
         def allocate(*args, &block)
-          pointer = FFI::MemoryPointer.new(*args, &block)
+          pointer = FFI::MemoryPointer.new(*args)
+          yield pointer
           pointer.autorelease = false
-          new(pointer)
+          new(FFI::Pointer.new(pointer))
         end
       end
     end
@@ -33,10 +40,7 @@ class Plaything
     class Device < ManagedPointer
       def self.release(device)
         super do |pointer|
-          # TODO: to not fail:
-          # remove contexts
-          # remove buffers
-          OpenAL.close_device(device)
+          OpenAL.try(:close_device, device)
         end
       end
     end
@@ -44,26 +48,20 @@ class Plaything
     class Context < ManagedPointer
       def self.release(context)
         super do |pointer|
-          OpenAL.make_context_current(nil)
-          OpenAL.destroy_context(context)
+          OpenAL.try(:make_context_current, nil)
+          OpenAL.try(:destroy_context, context)
         end
       end
     end
 
-    class Source
-      class Pointer < ManagedPointer
-        def self.release(source)
-          super do |source|
-            # TODO: read errors
-            OpenAL.delete_source(source)
-          end
-        end
-      end
-
+    class ManagedUINT
       extend FFI::DataConverter
-      native_type FFI::Type::UINT
 
       class << self
+        def inherited(other)
+          other.instance_eval { native_type FFI::Type::UINT }
+        end
+
         def to_native(source, ctx)
           source.id
         end
@@ -71,16 +69,40 @@ class Plaything
         def from_native(value, ctx)
           new(value)
         end
+
+        def size
+          FFI::Type::UINT.size
+        end
       end
 
       def initialize(source_id)
         @id = source_id
-        @pointer = Source::Pointer.allocate(:uint) do |pointer|
+        @pointer = self.class::Pointer.allocate(:uint) do |pointer|
           pointer.write_uint(source_id)
         end
       end
 
       attr_reader :id, :pointer
+    end
+
+    class Source < ManagedUINT
+      class Pointer < ManagedPointer
+        def self.release(source)
+          super do |source|
+            OpenAL.try(:delete_sources, 1, source)
+          end
+        end
+      end
+    end
+
+    class Buffer < ManagedUINT
+      class Pointer < ManagedPointer
+        def self.release(buffer)
+          super do |buffer|
+            OpenAL.try(:delete_buffers, 1, buffer)
+          end
+        end
+      end
     end
 
     typedef :pointer, :attributes
@@ -106,15 +128,24 @@ class Plaything
         error
       end
 
-      def capture_error
+      def capture_error(*args)
         last_error # reset
-        [yield, last_error]
+        public_send(*args).tap do
+          error = last_error
+          yield error if error
+        end
       end
 
-      def try(*args, &block)
-        value, error = capture_error { public_send(*args, &block) }
-        raise "#{args.first} raised error #{error}" if error
-        value
+      def try(*args)
+        capture_error(*args) do |error|
+          warn "#{args.first} failed with error #{error}"
+        end
+      end
+
+      def try!(*args)
+        capture_error(*args) do |error|
+          raise "#{args.first} failed with error #{error}"
+        end
       end
     end
 
@@ -129,6 +160,7 @@ class Plaything
 
     # Sources
     attach_function :gen_sources, :alGenSources, [ :sizei, :pointer ], :void
+    attach_function :delete_sources, :alDeleteSources, [ :sizei, :pointer ], :void
 
     attach_function :source_play, :alSourcePlay, [ :source ], :void
     attach_function :source_stop, :alSourceStop, [ :source ], :void
@@ -145,6 +177,7 @@ class Plaything
       :stereo16, 0x1103,
     ]
     attach_function :gen_buffers, :alGenBuffers, [ :sizei, :pointer ], :void
+    attach_function :delete_buffers, :alDeleteBuffers, [ :sizei, :pointer ], :void
 
     attach_function :buffer_data, :alBufferData, [ :buffer, :format, :pointer, :sizei, :sizei ], :void
 
@@ -206,10 +239,22 @@ class Plaything
       @device  = OpenAL.open_device(nil)
       raise Error, "Failed to open device" if @device.null?
 
-      @context = OpenAL.try(:create_context, @device, nil)
-      OpenAL.try(:make_context_current, @context)
-      OpenAL.try(:set_distance_model, :none)
-      OpenAL.try(:set_listener_f, :gain, 1.0)
+      @context = OpenAL.try!(:create_context, @device, nil)
+      OpenAL.try!(:make_context_current, @context)
+      OpenAL.try!(:set_distance_model, :none)
+      OpenAL.try!(:set_listener_f, :gain, 1.0)
+
+      FFI::MemoryPointer.new(OpenAL::Source, 1) do |ptr|
+        OpenAL.try!(:gen_sources, ptr.count, ptr)
+        @source = OpenAL::Source.new(ptr.read_uint)
+      end
+
+      FFI::MemoryPointer.new(OpenAL::Buffer, 3) do |ptr|
+        OpenAL.try!(:gen_buffers, ptr.count, ptr)
+        @buffers = ptr.read_array_of_type(OpenAL::Buffer, :read_uint, ptr.count).map do |buffer_id|
+          OpenAL::Buffer.new(buffer_id)
+        end
+      end
 
       @sample_type = sample_type
       @sample_rate = Integer(sample_rate)
