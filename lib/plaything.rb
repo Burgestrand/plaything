@@ -106,8 +106,6 @@ class Plaything
     end
 
     typedef :pointer, :attributes
-    typedef :uint, :source
-    typedef :uint, :buffer
     typedef :int, :sizei
 
     # Errors
@@ -162,12 +160,11 @@ class Plaything
     attach_function :gen_sources, :alGenSources, [ :sizei, :pointer ], :void
     attach_function :delete_sources, :alDeleteSources, [ :sizei, :pointer ], :void
 
-    attach_function :source_play, :alSourcePlay, [ :source ], :void
-    attach_function :source_stop, :alSourceStop, [ :source ], :void
-    attach_function :source_pause, :alSourcePause, [ :source ], :void
+    attach_function :source_play, :alSourcePlay, [ Source ], :void
+    attach_function :source_pause, :alSourcePause, [ Source ], :void
 
-    attach_function :source_unqueue_buffers, :alSourceUnqueueBuffers, [ :source, :sizei, :pointer ], :void
-    attach_function :source_queue_buffers, :alSourceQueueBuffers, [ :source, :sizei, :pointer ], :void
+    attach_function :source_unqueue_buffers, :alSourceUnqueueBuffers, [ Source, :sizei, :pointer ], :void
+    attach_function :source_queue_buffers, :alSourceQueueBuffers, [ Source, :sizei, :pointer ], :void
 
     # Buffers
     enum :format, [
@@ -179,7 +176,7 @@ class Plaything
     attach_function :gen_buffers, :alGenBuffers, [ :sizei, :pointer ], :void
     attach_function :delete_buffers, :alDeleteBuffers, [ :sizei, :pointer ], :void
 
-    attach_function :buffer_data, :alBufferData, [ :buffer, :format, :pointer, :sizei, :sizei ], :void
+    attach_function :buffer_data, :alBufferData, [ Buffer, :format, :pointer, :sizei, :sizei ], :void
 
     # Parameters
     enum :parameter, [
@@ -225,8 +222,8 @@ class Plaything
     attach_function :set_listener_f, :alListenerf, [ :parameter, :float ], :void
 
     ## Sources
-    attach_function :set_source_i, :alSourcei, [ :source, :parameter, :int ], :void
-    attach_function :get_source_i, :alGetSourcei, [ :source, :parameter, :pointer ], :void
+    attach_function :set_source_i, :alSourcei, [ Source, :parameter, :int ], :void
+    attach_function :get_source_i, :alGetSourcei, [ Source, :parameter, :pointer ], :void
 
     # Global params
     attach_function :set_distance_model, :alDistanceModel, [ :parameter ], :void
@@ -267,14 +264,12 @@ class Plaything
 
     # Start playback of queued audio.
     def play
-    end
-
-    # @return [Integer] how many milliseconds of audio that has been played so far.
-    def position
+      OpenAL.try!(:source_play, @source)
     end
 
     # Pause playback of queued audio.
     def pause
+      OpenAL.try!(:source_pause, @source)
     end
 
     # Stop playback and clear queued audio.
@@ -285,6 +280,16 @@ class Plaything
 
     # Completely clear out the audio buffers, including the playing ones.
     def clear
+      OpenAL.try!(:set_source_i, @source, :buffer, 0)
+    end
+
+    def state
+      get_source_i(:source_state)
+    end
+
+    # @return [Integer] how many milliseconds of audio that has been played so far.
+    def position
+      get_source_i(:sample_offset)
     end
 
     # Queue audio frames for playback.
@@ -292,6 +297,15 @@ class Plaything
     # @param [Array<[ Channels… ]>] frames array of N-sized arrays, containing samples for all N channels
     # @return [Integer] amount of frames that could be consumed.
     def <<(frames)
+    end
+
+    protected
+
+    def get_source_i(parameter)
+      FFI::MemoryPointer.new(:int) do |ptr|
+        OpenAL.try(:get_source_i, @source, parameter, ptr)
+        return Plaything::OpenAL.enum_type(:parameter)[ptr.read_int]
+      end
     end
   end
 end
