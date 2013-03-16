@@ -79,10 +79,24 @@ class Plaything
           def size
             type.size
           end
+
+          def extract(pointer, count)
+            pointer.read_array_of_type(self, :read_uint, count).map do |uint|
+              new(uint)
+            end
+          end
         end
 
         def initialize(value)
           @value = value
+        end
+
+        def ==(other)
+          other.is_a?(self.class) and other.value == value
+        end
+
+        def to_native
+          self.class.to_native(self, nil)
         end
 
         attr_reader :value
@@ -132,10 +146,6 @@ class Plaything
 
     class Buffer < TypeClass(FFI::Type::UINT)
       include OpenAL::Paramable(:buffer)
-
-      def length
-        get(:size, Integer)
-      end
     end
 
     typedef :pointer, :attributes
@@ -196,8 +206,8 @@ class Plaything
     attach_function :source_play, :alSourcePlay, [ Source ], :void
     attach_function :source_pause, :alSourcePause, [ Source ], :void
 
-    attach_function :source_unqueue_buffers, :alSourceUnqueueBuffers, [ Source, :sizei, :pointer ], :void
     attach_function :source_queue_buffers, :alSourceQueueBuffers, [ Source, :sizei, :pointer ], :void
+    attach_function :source_unqueue_buffers, :alSourceUnqueueBuffers, [ Source, :sizei, :pointer ], :void
 
     # Buffers
     enum :format, [
@@ -282,7 +292,7 @@ class Plaything
   class Stream
     Error = Class.new(StandardError)
 
-    def initialize(sample_type: :float32, sample_rate: 44100, channels: 2)
+    def initialize(sample_type: :int16, sample_rate: 44100, channels: 2)
       @device  = OpenAL.open_device(nil)
       raise Error, "Failed to open device" if @device.null?
 
@@ -298,10 +308,26 @@ class Plaything
 
       @sample_type = sample_type
       @sample_rate = Integer(sample_rate)
+      @sample_size = FFI.find_type(sample_type).size
       @channels    = Integer(channels)
+
+      @sample_format = { [ :int16, 2 ] => :stereo16, }.fetch([@sample_type, @channels]) do
+        raise TypeError, "unknown sample format for type [#{@sample_type}, #{@channels}]"
+      end
+
+      FFI::MemoryPointer.new(OpenAL::Buffer, 3) do |ptr|
+        OpenAL.try!(:gen_buffers, ptr.count, ptr)
+        @buffers = OpenAL::Buffer.extract(ptr, ptr.count)
+      end
+
+      @free_buffers = @buffers.clone
+      @queued_buffers = []
+      @queued_samples = []
+
+      @buffer_size = sample_rate * 1
     end
 
-    attr_reader :sample_type, :sample_rate, :channels
+    attr_reader :sample_size, :sample_format, :sample_type, :sample_rate, :channels, :buffer_size
     attr_reader :device, :context, :source
 
     # Start playback of queued audio.
@@ -325,8 +351,10 @@ class Plaything
       @source.set(:buffer, 0)
     end
 
-    def state
-      @source.get(:source_state)
+    # @return [Integer] total size of current play queue.
+    def queue_size
+      processed_buffers = @source.get(:buffers_processed, Integer)
+      (@queued_buffers.length - processed_buffers) * buffer_size + @queued_samples.length
     end
 
     # @return [Integer] how many milliseconds of audio that has been played so far.
@@ -336,25 +364,40 @@ class Plaything
 
     # Queue audio frames for playback.
     #
-    # @param [Array<[ Channels… ]>] frames array of N-sized arrays, containing samples for all N channels
-    # @return [Integer] amount of frames that could be consumed.
+    # @param [Array<[ Channels… ]>] frames array of N-sized arrays of integers.
     def <<(frames)
-      with_current_buffer do |buffer|
-      end
-    end
+      frames = frames.flatten
+      processed_buffers = @source.get(:buffers_processed, Integer)
 
-    protected
-
-    def with_current_buffer
-      buffer_count = 3
-      buffer_size  = sample_rate * 3
-
-      if @source.get(:buffers_queued, Integer) < buffer_count
-        FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |ptr|
-          OpenAL.try!(:gen_buffers, ptr.count, ptr)
-          buffer = OpenAL::Buffer.new(ptr.read_uint)
+      if processed_buffers > 0 # returns all queued buffers if not playing
+        FFI::MemoryPointer.new(OpenAL::Buffer, processed_buffers) do |ptr|
+          OpenAL.try(:source_unqueue_buffers, @source, ptr.count, ptr)
+          @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
+          @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
         end
       end
+
+      consumed_frames = frames.take(buffer_size - @queued_samples.length)
+      @queued_samples.concat(consumed_frames)
+
+      if @queued_samples.length >= buffer_size and @free_buffers.any?
+        current_buffer = @free_buffers.shift
+
+        FFI::MemoryPointer.new(sample_type, @queued_samples.length) do |samples|
+          samples.public_send(:"write_array_of_#{sample_type}", @queued_samples)
+          OpenAL.try(:buffer_data, current_buffer, sample_format, samples, samples.size, sample_rate)
+          @queued_samples.clear
+        end
+
+        FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |buffers|
+          buffers.write_uint(current_buffer.to_native)
+          OpenAL.try(:source_queue_buffers, @source, buffers.count, buffers)
+        end
+
+        @queued_buffers.push(current_buffer)
+      end
+
+      consumed_frames.length
     end
   end
 end
