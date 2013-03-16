@@ -1,3 +1,3 @@
-module Plaything
+class Plaything
   VERSION = "0.0.1"
 end
