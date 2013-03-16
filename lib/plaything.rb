@@ -54,54 +54,87 @@ class Plaything
       end
     end
 
-    class ManagedUINT
-      extend FFI::DataConverter
+    def self.TypeClass(type)
+      Class.new do
+        extend FFI::DataConverter
+        @@type = type
 
-      class << self
-        def inherited(other)
-          other.instance_eval { native_type FFI::Type::UINT }
+        class << self
+          def inherited(other)
+            other.native_type(type)
+          end
+
+          def type
+            @@type
+          end
+
+          def to_native(source, ctx)
+            source.value
+          end
+
+          def from_native(value, ctx)
+            new(value)
+          end
+
+          def size
+            type.size
+          end
         end
 
-        def to_native(source, ctx)
-          source.id
+        def initialize(value)
+          @value = value
         end
 
-        def from_native(value, ctx)
-          new(value)
-        end
-
-        def size
-          FFI::Type::UINT.size
-        end
+        attr_reader :value
       end
-
-      def initialize(source_id)
-        @id = source_id
-        @pointer = self.class::Pointer.allocate(:uint) do |pointer|
-          pointer.write_uint(source_id)
-        end
-      end
-
-      attr_reader :id, :pointer
     end
 
-    class Source < ManagedUINT
-      class Pointer < ManagedPointer
-        def self.release(source)
-          super do |source|
-            OpenAL.try(:delete_sources, 1, source)
+    def self.Paramable(type)
+      Module.new do
+        define_method(:al_type) do
+          type
+        end
+
+        def set(parameter, value)
+          type = if value.is_a?(Integer)
+            OpenAL.try!(:"set_#{al_type}_i", self, parameter, value)
+          elsif value.is_a?(Float)
+            OpenAL.try!(:"set_#{al_type}_f", self, parameter, value)
+          else
+            raise TypeError, "invalid type of #{value}, must be int or float"
+          end
+        end
+
+        def get(parameter, type = :enum)
+          reader = if type == Integer
+            :int
+          elsif type == Float
+            :float
+          elsif type == :enum
+            :int
+          else
+            raise TypeError, "unknown type #{type}"
+          end
+
+          FFI::MemoryPointer.new(reader) do |ptr|
+            OpenAL.try!(:"get_#{al_type}_#{reader}", self, parameter, ptr)
+            value = ptr.public_send(:"read_#{reader}")
+            value = OpenAL.enum_type(:parameter)[value] if type == :enum
+            return value
           end
         end
       end
     end
 
-    class Buffer < ManagedUINT
-      class Pointer < ManagedPointer
-        def self.release(buffer)
-          super do |buffer|
-            OpenAL.try(:delete_buffers, 1, buffer)
-          end
-        end
+    class Source < TypeClass(FFI::Type::UINT)
+      include OpenAL::Paramable(:source)
+    end
+
+    class Buffer < TypeClass(FFI::Type::UINT)
+      include OpenAL::Paramable(:buffer)
+
+      def length
+        get(:size, Integer)
       end
     end
 
@@ -181,7 +214,9 @@ class Plaything
     # Parameters
     enum :parameter, [
       :none, 0x0000,
+
       :source_relative, 0x0202,
+
       :cone_inner_angle, 0x1001,
       :cone_outer_angle, 0x1002,
       :pitch, 0x1003,
@@ -194,6 +229,7 @@ class Plaything
       :min_gain, 0x100D,
       :max_gain, 0x100E,
       :orientation, 0x100F,
+
       :source_state, 0x1010,
       :initial, 0x1011,
       :playing, 0x1012,
@@ -201,6 +237,7 @@ class Plaything
       :stopped, 0x1014,
       :buffers_queued, 0x1015,
       :buffers_processed, 0x1016,
+
       :reference_distance, 0x1020,
       :rolloff_factor, 0x1021,
       :cone_outer_gain, 0x1022,
@@ -209,6 +246,15 @@ class Plaything
       :sample_offset, 0x1025,
       :byte_offset, 0x1026,
       :source_type, 0x1027,
+
+      :frequency, 0x2001,
+      :bits, 0x2002,
+      :channels, 0x2003,
+      :size, 0x2004,
+      :unused, 0x2010,
+      :pending, 0x2011,
+      :processed, 0x2012,
+
       :distance_model, 0xD000,
       :inverse_distance, 0xD001,
       :inverse_distance_clamped, 0xD002,
@@ -219,11 +265,15 @@ class Plaything
     ]
 
     ## Listeners
-    attach_function :set_listener_f, :alListenerf, [ :parameter, :float ], :void
+    attach_function :set_listener_float, :alListenerf, [ :parameter, :float ], :void
 
     ## Sources
-    attach_function :set_source_i, :alSourcei, [ Source, :parameter, :int ], :void
-    attach_function :get_source_i, :alGetSourcei, [ Source, :parameter, :pointer ], :void
+    attach_function :set_source_int, :alSourcei, [ Source, :parameter, :int ], :void
+    attach_function :get_source_int, :alGetSourcei, [ Source, :parameter, :pointer ], :void
+
+    ## Sources
+    attach_function :set_buffer_int, :alBufferi, [ Buffer, :parameter, :int ], :void
+    attach_function :get_buffer_int, :alGetBufferi, [ Buffer, :parameter, :pointer ], :void
 
     # Global params
     attach_function :set_distance_model, :alDistanceModel, [ :parameter ], :void
@@ -239,18 +289,11 @@ class Plaything
       @context = OpenAL.try!(:create_context, @device, nil)
       OpenAL.try!(:make_context_current, @context)
       OpenAL.try!(:set_distance_model, :none)
-      OpenAL.try!(:set_listener_f, :gain, 1.0)
+      OpenAL.try!(:set_listener_float, :gain, 1.0)
 
       FFI::MemoryPointer.new(OpenAL::Source, 1) do |ptr|
         OpenAL.try!(:gen_sources, ptr.count, ptr)
         @source = OpenAL::Source.new(ptr.read_uint)
-      end
-
-      FFI::MemoryPointer.new(OpenAL::Buffer, 3) do |ptr|
-        OpenAL.try!(:gen_buffers, ptr.count, ptr)
-        @buffers = ptr.read_array_of_type(OpenAL::Buffer, :read_uint, ptr.count).map do |buffer_id|
-          OpenAL::Buffer.new(buffer_id)
-        end
       end
 
       @sample_type = sample_type
@@ -258,9 +301,8 @@ class Plaything
       @channels    = Integer(channels)
     end
 
-    attr_reader :sample_type
-    attr_reader :sample_rate
-    attr_reader :channels
+    attr_reader :sample_type, :sample_rate, :channels
+    attr_reader :device, :context, :source
 
     # Start playback of queued audio.
     def play
@@ -280,16 +322,16 @@ class Plaything
 
     # Completely clear out the audio buffers, including the playing ones.
     def clear
-      OpenAL.try!(:set_source_i, @source, :buffer, 0)
+      @source.set(:buffer, 0)
     end
 
     def state
-      get_source_i(:source_state)
+      @source.get(:source_state)
     end
 
     # @return [Integer] how many milliseconds of audio that has been played so far.
     def position
-      get_source_i(:sample_offset)
+      @source.get(:sample_offset, Integer)
     end
 
     # Queue audio frames for playback.
@@ -297,14 +339,21 @@ class Plaything
     # @param [Array<[ Channels… ]>] frames array of N-sized arrays, containing samples for all N channels
     # @return [Integer] amount of frames that could be consumed.
     def <<(frames)
+      with_current_buffer do |buffer|
+      end
     end
 
     protected
 
-    def get_source_i(parameter)
-      FFI::MemoryPointer.new(:int) do |ptr|
-        OpenAL.try(:get_source_i, @source, parameter, ptr)
-        return Plaything::OpenAL.enum_type(:parameter)[ptr.read_int]
+    def with_current_buffer
+      buffer_count = 3
+      buffer_size  = sample_rate * 3
+
+      if @source.get(:buffers_queued, Integer) < buffer_count
+        FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |ptr|
+          OpenAL.try!(:gen_buffers, ptr.count, ptr)
+          buffer = OpenAL::Buffer.new(ptr.read_uint)
+        end
       end
     end
   end
