@@ -353,8 +353,7 @@ class Plaything
 
     # @return [Integer] total size of current play queue.
     def queue_size
-      processed_buffers = @source.get(:buffers_processed, Integer)
-      (@queued_buffers.length - processed_buffers) * buffer_size + @queued_samples.length
+      [(@queued_buffers.length - buffers_processed) * buffer_size - position, 0].max
     end
 
     # @return [Integer] how many milliseconds of audio that has been played so far.
@@ -367,10 +366,9 @@ class Plaything
     # @param [Array<[ Channels… ]>] frames array of N-sized arrays of integers.
     def <<(frames)
       frames = frames.flatten
-      processed_buffers = @source.get(:buffers_processed, Integer)
 
-      if processed_buffers > 0 # returns all queued buffers if not playing
-        FFI::MemoryPointer.new(OpenAL::Buffer, processed_buffers) do |ptr|
+      if buffers_processed > 0
+        FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
           OpenAL.try(:source_unqueue_buffers, @source, ptr.count, ptr)
           @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
           @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
@@ -398,6 +396,20 @@ class Plaything
       end
 
       consumed_frames.length
+    end
+
+    protected
+
+    def buffers_playing
+      [@queued_buffers.length - buffers_processed, 0].max
+    end
+
+    def buffers_processed
+      if @source.get(:source_state) == :playing
+        @source.get(:buffers_processed, Integer)
+      else
+        0
+      end
     end
   end
 end
