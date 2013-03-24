@@ -1,415 +1,134 @@
-require "plaything/version"
 require "ffi"
-
-class FFI::AbstractMemory
-  def count
-    size.div(type_size)
-  end
-end
+require "plaything/version"
+require "plaything/monkey_patches/ffi"
+require "plaything/support"
+require "plaything/objects"
+require "plaything/openal"
 
 class Plaything
-  module OpenAL
-    extend FFI::Library
+  Error = Class.new(StandardError)
 
-    ffi_lib ["openal", "/System/Library/Frameworks/OpenAL.framework/Versions/Current/OpenAL"]
+  def initialize(sample_type: :int16, sample_rate: 44100, channels: 2)
+    @device  = OpenAL.open_device(nil)
+    raise Error, "Failed to open device" if @device.null?
 
-    class Error < StandardError
+    @context = OpenAL.try!(:create_context, @device, nil)
+    OpenAL.try!(:make_context_current, @context)
+    OpenAL.try!(:set_distance_model, :none)
+    OpenAL.try!(:set_listener_float, :gain, 1.0)
+
+    FFI::MemoryPointer.new(OpenAL::Source, 1) do |ptr|
+      OpenAL.try!(:gen_sources, ptr.count, ptr)
+      @source = OpenAL::Source.new(ptr.read_uint)
     end
 
-    class ManagedPointer < FFI::AutoPointer
-      class << self
-        def release(pointer)
-          if pointer.null?
-            warn "Trying to release NULL #{name}."
-          elsif block_given?
-            yield pointer
-          else
-            warn "No releaser for #{name}."
-          end
-        end
+    @sample_type = sample_type
+    @sample_rate = Integer(sample_rate)
+    @sample_size = FFI.find_type(sample_type).size
+    @channels    = Integer(channels)
 
-        def allocate(*args, &block)
-          pointer = FFI::MemoryPointer.new(*args)
-          yield pointer
-          pointer.autorelease = false
-          new(FFI::Pointer.new(pointer))
-        end
-      end
+    @sample_format = { [ :int16, 2 ] => :stereo16, }.fetch([@sample_type, @channels]) do
+      raise TypeError, "unknown sample format for type [#{@sample_type}, #{@channels}]"
     end
 
-    class Device < ManagedPointer
-      def self.release(device)
-        super do |pointer|
-          OpenAL.try(:close_device, device)
-        end
-      end
+    FFI::MemoryPointer.new(OpenAL::Buffer, 3) do |ptr|
+      OpenAL.try!(:gen_buffers, ptr.count, ptr)
+      @buffers = OpenAL::Buffer.extract(ptr, ptr.count)
     end
 
-    class Context < ManagedPointer
-      def self.release(context)
-        super do |pointer|
-          OpenAL.try(:make_context_current, nil)
-          OpenAL.try(:destroy_context, context)
-        end
-      end
-    end
+    @free_buffers = @buffers.clone
+    @queued_buffers = []
+    @queued_samples = []
 
-    def self.TypeClass(type)
-      Class.new do
-        extend FFI::DataConverter
-        @@type = type
-
-        class << self
-          def inherited(other)
-            other.native_type(type)
-          end
-
-          def type
-            @@type
-          end
-
-          def to_native(source, ctx)
-            source.value
-          end
-
-          def from_native(value, ctx)
-            new(value)
-          end
-
-          def size
-            type.size
-          end
-
-          def extract(pointer, count)
-            pointer.read_array_of_type(self, :read_uint, count).map do |uint|
-              new(uint)
-            end
-          end
-        end
-
-        def initialize(value)
-          @value = value
-        end
-
-        def ==(other)
-          other.is_a?(self.class) and other.value == value
-        end
-
-        def to_native
-          self.class.to_native(self, nil)
-        end
-
-        attr_reader :value
-      end
-    end
-
-    def self.Paramable(type)
-      Module.new do
-        define_method(:al_type) do
-          type
-        end
-
-        def set(parameter, value)
-          type = if value.is_a?(Integer)
-            OpenAL.try!(:"set_#{al_type}_i", self, parameter, value)
-          elsif value.is_a?(Float)
-            OpenAL.try!(:"set_#{al_type}_f", self, parameter, value)
-          else
-            raise TypeError, "invalid type of #{value}, must be int or float"
-          end
-        end
-
-        def get(parameter, type = :enum)
-          reader = if type == Integer
-            :int
-          elsif type == Float
-            :float
-          elsif type == :enum
-            :int
-          else
-            raise TypeError, "unknown type #{type}"
-          end
-
-          FFI::MemoryPointer.new(reader) do |ptr|
-            OpenAL.try!(:"get_#{al_type}_#{reader}", self, parameter, ptr)
-            value = ptr.public_send(:"read_#{reader}")
-            value = OpenAL.enum_type(:parameter)[value] if type == :enum
-            return value
-          end
-        end
-      end
-    end
-
-    class Source < TypeClass(FFI::Type::UINT)
-      include OpenAL::Paramable(:source)
-    end
-
-    class Buffer < TypeClass(FFI::Type::UINT)
-      include OpenAL::Paramable(:buffer)
-    end
-
-    typedef :pointer, :attributes
-    typedef :int, :sizei
-
-    # Errors
-    enum :error, [
-      :no_error, 0,
-      :invalid_name, 0xA001,
-      :invalid_enum, 0xA002,
-      :invalid_value, 0xA003,
-      :invalid_operation, 0xA004,
-      :out_of_memory, 0xA005,
-    ]
-    attach_function :alGetError, [ ], :error
-
-    class << self
-      def last_error
-        error = OpenAL.alGetError
-        error = nil if error == :no_error
-        error
-      end
-
-      def capture_error(*args)
-        last_error # reset
-        public_send(*args).tap do
-          error = last_error
-          yield error if error
-        end
-      end
-
-      def try(*args)
-        capture_error(*args) do |error|
-          warn "#{args.first} failed with error #{error}"
-        end
-      end
-
-      def try!(*args)
-        capture_error(*args) do |error|
-          raise "#{args.first} failed with error #{error}"
-        end
-      end
-    end
-
-    # Devices
-    attach_function :open_device, :alcOpenDevice, [ :string ], Device
-    attach_function :close_device, :alcCloseDevice, [ Device ], :bool
-
-    # Context
-    attach_function :create_context, :alcCreateContext, [ Device, :attributes ], Context
-    attach_function :destroy_context, :alcDestroyContext, [ Context ], :void
-    attach_function :make_context_current, :alcMakeContextCurrent, [ Context ], :bool
-
-    # Sources
-    attach_function :gen_sources, :alGenSources, [ :sizei, :pointer ], :void
-    attach_function :delete_sources, :alDeleteSources, [ :sizei, :pointer ], :void
-
-    attach_function :source_play, :alSourcePlay, [ Source ], :void
-    attach_function :source_pause, :alSourcePause, [ Source ], :void
-
-    attach_function :source_queue_buffers, :alSourceQueueBuffers, [ Source, :sizei, :pointer ], :void
-    attach_function :source_unqueue_buffers, :alSourceUnqueueBuffers, [ Source, :sizei, :pointer ], :void
-
-    # Buffers
-    enum :format, [
-      :mono8, 0x1100,
-      :mono16, 0x1101,
-      :stereo8, 0x1102,
-      :stereo16, 0x1103,
-    ]
-    attach_function :gen_buffers, :alGenBuffers, [ :sizei, :pointer ], :void
-    attach_function :delete_buffers, :alDeleteBuffers, [ :sizei, :pointer ], :void
-
-    attach_function :buffer_data, :alBufferData, [ Buffer, :format, :pointer, :sizei, :sizei ], :void
-
-    # Parameters
-    enum :parameter, [
-      :none, 0x0000,
-
-      :source_relative, 0x0202,
-
-      :cone_inner_angle, 0x1001,
-      :cone_outer_angle, 0x1002,
-      :pitch, 0x1003,
-      :position, 0x1004,
-      :direction, 0x1005,
-      :velocity, 0x1006,
-      :looping, 0x1007,
-      :buffer, 0x1009,
-      :gain, 0x100A,
-      :min_gain, 0x100D,
-      :max_gain, 0x100E,
-      :orientation, 0x100F,
-
-      :source_state, 0x1010,
-      :initial, 0x1011,
-      :playing, 0x1012,
-      :paused, 0x1013,
-      :stopped, 0x1014,
-      :buffers_queued, 0x1015,
-      :buffers_processed, 0x1016,
-
-      :reference_distance, 0x1020,
-      :rolloff_factor, 0x1021,
-      :cone_outer_gain, 0x1022,
-      :max_distance, 0x1023,
-      :sec_offset, 0x1024,
-      :sample_offset, 0x1025,
-      :byte_offset, 0x1026,
-      :source_type, 0x1027,
-
-      :frequency, 0x2001,
-      :bits, 0x2002,
-      :channels, 0x2003,
-      :size, 0x2004,
-      :unused, 0x2010,
-      :pending, 0x2011,
-      :processed, 0x2012,
-
-      :distance_model, 0xD000,
-      :inverse_distance, 0xD001,
-      :inverse_distance_clamped, 0xD002,
-      :linear_distance, 0xD003,
-      :linear_distance_clamped, 0xD004,
-      :exponent_distance, 0xD005,
-      :exponent_distance_clamped, 0xD006,
-    ]
-
-    ## Listeners
-    attach_function :set_listener_float, :alListenerf, [ :parameter, :float ], :void
-
-    ## Sources
-    attach_function :set_source_int, :alSourcei, [ Source, :parameter, :int ], :void
-    attach_function :get_source_int, :alGetSourcei, [ Source, :parameter, :pointer ], :void
-
-    ## Sources
-    attach_function :set_buffer_int, :alBufferi, [ Buffer, :parameter, :int ], :void
-    attach_function :get_buffer_int, :alGetBufferi, [ Buffer, :parameter, :pointer ], :void
-
-    # Global params
-    attach_function :set_distance_model, :alDistanceModel, [ :parameter ], :void
+    @buffer_size = sample_rate * 1
   end
 
-  class Stream
-    Error = Class.new(StandardError)
+  attr_reader :sample_size, :sample_format, :sample_type, :sample_rate, :channels, :buffer_size
+  attr_reader :device, :context, :source
 
-    def initialize(sample_type: :int16, sample_rate: 44100, channels: 2)
-      @device  = OpenAL.open_device(nil)
-      raise Error, "Failed to open device" if @device.null?
+  # Start playback of queued audio.
+  def play
+    OpenAL.try!(:source_play, @source)
+  end
 
-      @context = OpenAL.try!(:create_context, @device, nil)
-      OpenAL.try!(:make_context_current, @context)
-      OpenAL.try!(:set_distance_model, :none)
-      OpenAL.try!(:set_listener_float, :gain, 1.0)
+  # Pause playback of queued audio.
+  def pause
+    OpenAL.try!(:source_pause, @source)
+  end
 
-      FFI::MemoryPointer.new(OpenAL::Source, 1) do |ptr|
-        OpenAL.try!(:gen_sources, ptr.count, ptr)
-        @source = OpenAL::Source.new(ptr.read_uint)
+  # Stop playback and clear queued audio.
+  def stop
+    pause
+    clear
+  end
+
+  # Completely clear out the audio buffers, including the playing ones.
+  def clear
+    @source.set(:buffer, 0)
+  end
+
+  # @return [Integer] total size of current play queue.
+  def queue_size
+    [(buffers_playing - 1) * buffer_size - buffer_position, 0].max
+  end
+
+  # Queue audio frames for playback.
+  #
+  # @param [Array<[ Channels… ]>] frames array of N-sized arrays of integers.
+  def <<(frames)
+    frames = frames.flatten
+
+    if buffers_processed > 0
+      FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
+        OpenAL.try(:source_unqueue_buffers, @source, ptr.count, ptr)
+        @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
+        @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
+      end
+    end
+
+    consumed_frames = frames.take(buffer_size - @queued_samples.length)
+    @queued_samples.concat(consumed_frames)
+
+    if @queued_samples.length >= buffer_size and @free_buffers.any?
+      current_buffer = @free_buffers.shift
+
+      FFI::MemoryPointer.new(sample_type, @queued_samples.length) do |samples|
+        samples.public_send(:"write_array_of_#{sample_type}", @queued_samples)
+        OpenAL.try(:buffer_data, current_buffer, sample_format, samples, samples.size, sample_rate)
+        @queued_samples.clear
       end
 
-      @sample_type = sample_type
-      @sample_rate = Integer(sample_rate)
-      @sample_size = FFI.find_type(sample_type).size
-      @channels    = Integer(channels)
-
-      @sample_format = { [ :int16, 2 ] => :stereo16, }.fetch([@sample_type, @channels]) do
-        raise TypeError, "unknown sample format for type [#{@sample_type}, #{@channels}]"
+      FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |buffers|
+        buffers.write_uint(current_buffer.to_native)
+        OpenAL.try(:source_queue_buffers, @source, buffers.count, buffers)
       end
 
-      FFI::MemoryPointer.new(OpenAL::Buffer, 3) do |ptr|
-        OpenAL.try!(:gen_buffers, ptr.count, ptr)
-        @buffers = OpenAL::Buffer.extract(ptr, ptr.count)
-      end
-
-      @free_buffers = @buffers.clone
-      @queued_buffers = []
-      @queued_samples = []
-
-      @buffer_size = sample_rate * 1
+      @queued_buffers.push(current_buffer)
     end
 
-    attr_reader :sample_size, :sample_format, :sample_type, :sample_rate, :channels, :buffer_size
-    attr_reader :device, :context, :source
+    consumed_frames.length
+  end
 
-    # Start playback of queued audio.
-    def play
-      OpenAL.try!(:source_play, @source)
-    end
+  protected
 
-    # Pause playback of queued audio.
-    def pause
-      OpenAL.try!(:source_pause, @source)
-    end
+  def buffer_position
+    offset = @source.get(:sample_offset, Integer)
+    offset - buffers_processed * buffer_size
+  end
 
-    # Stop playback and clear queued audio.
-    def stop
-      pause
-      clear
-    end
+  def buffers_playing
+    buffers_queued - buffers_processed
+  end
 
-    # Completely clear out the audio buffers, including the playing ones.
-    def clear
-      @source.set(:buffer, 0)
-    end
+  def buffers_queued
+    @source.get(:buffers_queued, Integer)
+  end
 
-    # @return [Integer] total size of current play queue.
-    def queue_size
-      [(@queued_buffers.length - buffers_processed) * buffer_size - position, 0].max
-    end
-
-    # @return [Integer] how many milliseconds of audio that has been played so far.
-    def position
-      @source.get(:sample_offset, Integer)
-    end
-
-    # Queue audio frames for playback.
-    #
-    # @param [Array<[ Channels… ]>] frames array of N-sized arrays of integers.
-    def <<(frames)
-      frames = frames.flatten
-
-      if buffers_processed > 0
-        FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
-          OpenAL.try(:source_unqueue_buffers, @source, ptr.count, ptr)
-          @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
-          @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
-        end
-      end
-
-      consumed_frames = frames.take(buffer_size - @queued_samples.length)
-      @queued_samples.concat(consumed_frames)
-
-      if @queued_samples.length >= buffer_size and @free_buffers.any?
-        current_buffer = @free_buffers.shift
-
-        FFI::MemoryPointer.new(sample_type, @queued_samples.length) do |samples|
-          samples.public_send(:"write_array_of_#{sample_type}", @queued_samples)
-          OpenAL.try(:buffer_data, current_buffer, sample_format, samples, samples.size, sample_rate)
-          @queued_samples.clear
-        end
-
-        FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |buffers|
-          buffers.write_uint(current_buffer.to_native)
-          OpenAL.try(:source_queue_buffers, @source, buffers.count, buffers)
-        end
-
-        @queued_buffers.push(current_buffer)
-      end
-
-      consumed_frames.length
-    end
-
-    protected
-
-    def buffers_playing
-      [@queued_buffers.length - buffers_processed, 0].max
-    end
-
-    def buffers_processed
-      if @source.get(:source_state) == :playing
-        @source.get(:buffers_processed, Integer)
-      else
-        0
-      end
+  def buffers_processed
+    if @source.get(:source_state) == :playing
+      @source.get(:buffers_processed, Integer)
+    else
+      0
     end
   end
 end
