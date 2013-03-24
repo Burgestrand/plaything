@@ -38,9 +38,9 @@ class Plaything
 
     @free_buffers = @buffers.clone
     @queued_buffers = []
-    @queued_samples = []
+    @queued_frames = []
 
-    @buffer_size = sample_rate * 1
+    @buffer_size = (sample_rate / channels) * 1
   end
 
   attr_reader :sample_size, :sample_format, :sample_type, :sample_rate, :channels, :buffer_size
@@ -76,8 +76,6 @@ class Plaything
   #
   # @param [Array<[ Channels… ]>] frames array of N-sized arrays of integers.
   def <<(frames)
-    frames = frames.flatten
-
     if buffers_processed > 0
       FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
         OpenAL.source_unqueue_buffers(@source, ptr.count, ptr)
@@ -86,16 +84,17 @@ class Plaything
       end
     end
 
-    consumed_frames = frames.take(buffer_size - @queued_samples.length)
-    @queued_samples.concat(consumed_frames)
+    consumed_frames = frames.take(buffer_size - @queued_frames.length)
+    @queued_frames.concat(consumed_frames)
 
-    if @queued_samples.length >= buffer_size and @free_buffers.any?
+    if @queued_frames.length >= buffer_size and @free_buffers.any?
       current_buffer = @free_buffers.shift
+      outgoing_samples = @queued_frames.flatten
+      @queued_frames.clear
 
-      FFI::MemoryPointer.new(sample_type, @queued_samples.length) do |samples|
-        samples.public_send(:"write_array_of_#{sample_type}", @queued_samples)
+      FFI::MemoryPointer.new(sample_type, outgoing_samples.length) do |samples|
+        samples.public_send(:"write_array_of_#{sample_type}", outgoing_samples)
         OpenAL.buffer_data(current_buffer, sample_format, samples, samples.size, sample_rate)
-        @queued_samples.clear
       end
 
       FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |buffers|
