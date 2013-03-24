@@ -8,27 +8,29 @@ class Plaything
 
         def set(parameter, value)
           type = if value.is_a?(Integer)
-            OpenAL.try!(:"set_#{al_type}_int", self, parameter, value)
+            OpenAL.public_send(:"#{al_type}i", self, parameter, value)
           elsif value.is_a?(Float)
-            OpenAL.try!(:"set_#{al_type}_float", self, parameter, value)
+            OpenAL.public_send(:"#{al_type}f", self, parameter, value)
           else
             raise TypeError, "invalid type of #{value}, must be int or float"
           end
         end
 
         def get(parameter, type = :enum)
-          reader = if type == Integer
-            :int
+          name = if type == Integer
+            :i
           elsif type == Float
-            :float
+            :f
           elsif type == :enum
-            :int
+            :i
           else
             raise TypeError, "unknown type #{type}"
           end
 
+          reader = { f: :float, i: :int }.fetch(name)
+
           FFI::MemoryPointer.new(reader) do |ptr|
-            OpenAL.try!(:"get_#{al_type}_#{reader}", self, parameter, ptr)
+            OpenAL.public_send(:"get_#{al_type}#{name}", self, parameter, ptr)
             value = ptr.public_send(:"read_#{reader}")
             value = OpenAL.enum_type(:parameter)[value] if type == :enum
             return value

@@ -12,13 +12,13 @@ class Plaything
     @device  = OpenAL.open_device(nil)
     raise Error, "Failed to open device" if @device.null?
 
-    @context = OpenAL.try!(:create_context, @device, nil)
-    OpenAL.try!(:make_context_current, @context)
-    OpenAL.try!(:set_distance_model, :none)
-    OpenAL.try!(:set_listener_float, :gain, 1.0)
+    @context = OpenAL.create_context(@device, nil)
+    OpenAL.make_context_current(@context)
+    OpenAL.distance_model(:none)
+    OpenAL.listenerf(:gain, 1.0)
 
     FFI::MemoryPointer.new(OpenAL::Source, 1) do |ptr|
-      OpenAL.try!(:gen_sources, ptr.count, ptr)
+      OpenAL.gen_sources(ptr.count, ptr)
       @source = OpenAL::Source.new(ptr.read_uint)
     end
 
@@ -32,7 +32,7 @@ class Plaything
     end
 
     FFI::MemoryPointer.new(OpenAL::Buffer, 3) do |ptr|
-      OpenAL.try!(:gen_buffers, ptr.count, ptr)
+      OpenAL.gen_buffers(ptr.count, ptr)
       @buffers = OpenAL::Buffer.extract(ptr, ptr.count)
     end
 
@@ -48,12 +48,12 @@ class Plaything
 
   # Start playback of queued audio.
   def play
-    OpenAL.try!(:source_play, @source)
+    OpenAL.source_play(@source)
   end
 
   # Pause playback of queued audio.
   def pause
-    OpenAL.try!(:source_pause, @source)
+    OpenAL.source_pause(@source)
   end
 
   # Stop playback and clear queued audio.
@@ -80,7 +80,7 @@ class Plaything
 
     if buffers_processed > 0
       FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
-        OpenAL.try(:source_unqueue_buffers, @source, ptr.count, ptr)
+        OpenAL.source_unqueue_buffers(@source, ptr.count, ptr)
         @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
         @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
       end
@@ -94,13 +94,13 @@ class Plaything
 
       FFI::MemoryPointer.new(sample_type, @queued_samples.length) do |samples|
         samples.public_send(:"write_array_of_#{sample_type}", @queued_samples)
-        OpenAL.try(:buffer_data, current_buffer, sample_format, samples, samples.size, sample_rate)
+        OpenAL.buffer_data(current_buffer, sample_format, samples, samples.size, sample_rate)
         @queued_samples.clear
       end
 
       FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |buffers|
         buffers.write_uint(current_buffer.to_native)
-        OpenAL.try(:source_queue_buffers, @source, buffers.count, buffers)
+        OpenAL.source_queue_buffers(@source, buffers.count, buffers)
       end
 
       @queued_buffers.push(current_buffer)

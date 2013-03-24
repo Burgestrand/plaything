@@ -8,6 +8,8 @@ class Plaything
     typedef :int, :sizei
 
     # Errors
+    Error = Class.new(StandardError)
+
     enum :error, [
       :no_error, 0,
       :invalid_name, 0xA001,
@@ -18,52 +20,52 @@ class Plaything
     ]
     attach_function :alGetError, [ ], :error
 
-    class << self
-      def last_error
-        error = OpenAL.alGetError
-        error = nil if error == :no_error
-        error
-      end
+    # Overridden for three purposes.
+    #
+    # 1. Allows us to only supply OpenAL name, and converts it to snake_case
+    #    for attaching the function.
+    # 2. Wraps the call in an error-raise checker.
+    # 3. Creates a bang method that does not do automatic error checking.
+    def self.attach_function(c_name, params, returns, options = {})
+      ruby_name = c_name
+        .to_s
+        .sub(/\Aalc?/, "")
+        .gsub(/(?<!\A)\p{Lu}/, '_\0')
+        .downcase
+      bang_name = "#{ruby_name}!"
 
-      def capture_error(*args)
-        last_error # reset
-        public_send(*args).tap do
-          error = last_error
-          yield error if error
-        end
-      end
+      super(ruby_name, c_name, params, returns, options)
+      alias_method(bang_name, ruby_name)
 
-      def try(*args)
-        capture_error(*args) do |error|
-          warn "#{args.first} failed with error #{error}"
-        end
-      end
-
-      def try!(*args)
-        capture_error(*args) do |error|
-          raise "#{args.first} failed with error #{error}"
+      define_method(ruby_name) do |*args, &block|
+        alGetError # clear error
+        public_send(bang_name, *args, &block).tap do
+          error = get_error
+          unless error == :no_error
+            raise Error, "#{ruby_name} failed with #{error}"
+          end
         end
       end
     end
 
     # Devices
-    attach_function :open_device, :alcOpenDevice, [ :string ], Device
-    attach_function :close_device, :alcCloseDevice, [ Device ], :bool
+    attach_function :alcOpenDevice, [ :string ], Device
+    attach_function :alcCloseDevice, [ Device ], :bool
 
     # Context
-    attach_function :create_context, :alcCreateContext, [ Device, :attributes ], Context
-    attach_function :destroy_context, :alcDestroyContext, [ Context ], :void
-    attach_function :make_context_current, :alcMakeContextCurrent, [ Context ], :bool
+    attach_function :alcCreateContext, [ Device, :attributes ], Context
+    attach_function :alcDestroyContext, [ Context ], :void
+    attach_function :alcMakeContextCurrent, [ Context ], :bool
 
     # Sources
-    attach_function :gen_sources, :alGenSources, [ :sizei, :pointer ], :void
-    attach_function :delete_sources, :alDeleteSources, [ :sizei, :pointer ], :void
+    attach_function :alGenSources, [ :sizei, :pointer ], :void
+    attach_function :alDeleteSources, [ :sizei, :pointer ], :void
 
-    attach_function :source_play, :alSourcePlay, [ Source ], :void
-    attach_function :source_pause, :alSourcePause, [ Source ], :void
+    attach_function :alSourcePlay, [ Source ], :void
+    attach_function :alSourcePause, [ Source ], :void
 
-    attach_function :source_queue_buffers, :alSourceQueueBuffers, [ Source, :sizei, :pointer ], :void
-    attach_function :source_unqueue_buffers, :alSourceUnqueueBuffers, [ Source, :sizei, :pointer ], :void
+    attach_function :alSourceQueueBuffers, [ Source, :sizei, :pointer ], :void
+    attach_function :alSourceUnqueueBuffers, [ Source, :sizei, :pointer ], :void
 
     # Buffers
     enum :format, [
@@ -72,10 +74,10 @@ class Plaything
       :stereo8, 0x1102,
       :stereo16, 0x1103,
     ]
-    attach_function :gen_buffers, :alGenBuffers, [ :sizei, :pointer ], :void
-    attach_function :delete_buffers, :alDeleteBuffers, [ :sizei, :pointer ], :void
+    attach_function :alGenBuffers, [ :sizei, :pointer ], :void
+    attach_function :alDeleteBuffers, [ :sizei, :pointer ], :void
 
-    attach_function :buffer_data, :alBufferData, [ Buffer, :format, :pointer, :sizei, :sizei ], :void
+    attach_function :alBufferData, [ Buffer, :format, :pointer, :sizei, :sizei ], :void
 
     # Parameters
     enum :parameter, [
@@ -131,17 +133,17 @@ class Plaything
     ]
 
     ## Listeners
-    attach_function :set_listener_float, :alListenerf, [ :parameter, :float ], :void
+    attach_function :alListenerf, [ :parameter, :float ], :void
 
     ## Sources
-    attach_function :set_source_int, :alSourcei, [ Source, :parameter, :int ], :void
-    attach_function :get_source_int, :alGetSourcei, [ Source, :parameter, :pointer ], :void
+    attach_function :alSourcei, [ Source, :parameter, :int ], :void
+    attach_function :alGetSourcei, [ Source, :parameter, :pointer ], :void
 
     ## Sources
-    attach_function :set_buffer_int, :alBufferi, [ Buffer, :parameter, :int ], :void
-    attach_function :get_buffer_int, :alGetBufferi, [ Buffer, :parameter, :pointer ], :void
+    attach_function :alBufferi, [ Buffer, :parameter, :int ], :void
+    attach_function :alGetBufferi, [ Buffer, :parameter, :pointer ], :void
 
     # Global params
-    attach_function :set_distance_model, :alDistanceModel, [ :parameter ], :void
+    attach_function :alDistanceModel, [ :parameter ], :void
   end
 end
