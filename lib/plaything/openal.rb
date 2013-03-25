@@ -30,7 +30,7 @@ class Plaything
       ruby_name = c_name
         .to_s
         .sub(/\Aalc?/, "")
-        .gsub(/(?<!\A)\p{Lu}/, '_\0')
+        .gsub(/(?<!\A)\p{Lu}/u, '_\0')
         .downcase
       bang_name = "#{ruby_name}!"
 
