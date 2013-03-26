@@ -18,7 +18,7 @@ class Plaything
       :invalid_operation, 0xA004,
       :out_of_memory, 0xA005,
     ]
-    attach_function :alGetError, [ ], :error
+    attach_function :get_error, :alGetError, [ ], :error
 
     # Overridden for three purposes.
     #
@@ -38,7 +38,7 @@ class Plaything
       alias_method(bang_name, ruby_name)
 
       define_method(ruby_name) do |*args, &block|
-        alGetError # clear error
+        get_error # clear error
         public_send(bang_name, *args, &block).tap do
           error = get_error
           unless error == :no_error
@@ -46,6 +46,9 @@ class Plaything
           end
         end
       end
+
+      module_function ruby_name
+      module_function bang_name
     end
 
     # Devices
