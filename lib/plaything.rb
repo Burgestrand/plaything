@@ -71,7 +71,7 @@ class Plaything
   # @note All audio queues are completely cleared, and {#position} is reset.
   def stop
     OpenAL.source_stop(@source)
-    @source.set(:buffer, 0)
+    @source.detach_buffers
     @free_buffers.concat(@queued_buffers)
     @queued_buffers.clear
     @queued_frames.clear
