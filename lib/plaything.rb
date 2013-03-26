@@ -8,6 +8,12 @@ require "plaything/openal"
 class Plaything
   Error = Class.new(StandardError)
 
+  # Open the default output device and prepare it for playback.
+  #
+  # @param [Hash] options
+  # @option options [Symbol] sample_type (:int16)
+  # @option options [Integer] sample_rate (44100)
+  # @option options [Integer] channels (2)
   def initialize(options = { sample_type: :int16, sample_rate: 44100, channels: 2 })
     @device  = OpenAL.open_device(nil)
     raise Error, "Failed to open device" if @device.null?
@@ -40,29 +46,26 @@ class Plaything
     @queued_frames = []
 
     # 44100 int16s = 22050 frames = 0.5s (1 frame * 2 channels = 2 int16 = 1 sample = 1/44100 s)
-    @queue_size  = sample_rate * channels * 1
-    @buffer_size = sample_rate * 1
+    @queue_size  = @sample_rate * @channels * 1
+    @buffer_size = @sample_rate * 1
 
     @total_buffers_processed = 0
   end
 
-  attr_reader :sample_format, :sample_type, :sample_rate, :channels
-  attr_reader :device, :context, :source
-
   # Start playback of queued audio.
   def play
-    OpenAL.source_play(source)
+    OpenAL.source_play(@source)
   end
 
   # Pause playback of queued audio.
   def pause
-    OpenAL.source_pause(source)
+    OpenAL.source_pause(@source)
   end
 
   # Stop playback and clear any queued audio.
   def stop
-    OpenAL.source_stop(source)
-    source.set(:buffer, 0)
+    OpenAL.source_stop(@source)
+    @source.set(:buffer, 0)
     @free_buffers.concat(@queued_buffers)
     @queued_buffers.clear
     @queued_frames.clear
@@ -71,7 +74,7 @@ class Plaything
 
   # @return [Rational] how many seconds of audio that has been played since last clear.
   def position
-    Rational(@total_buffers_processed * @buffer_size + sample_offset, sample_rate)
+    Rational(@total_buffers_processed * @buffer_size + sample_offset, @sample_rate)
   end
 
   # @return [Integer] total size of current play queue.
@@ -83,32 +86,32 @@ class Plaything
   #
   # @param [Array<[ Channels… ]>] frames array of N-sized arrays of integers.
   def <<(frames)
-    if source.get(:source_state) != :stopped && buffers_processed > 0
+    if @source.get(:source_state) != :stopped && buffers_processed > 0
       FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
-        OpenAL.source_unqueue_buffers(source, ptr.count, ptr)
+        OpenAL.source_unqueue_buffers(@source, ptr.count, ptr)
         @total_buffers_processed += ptr.count
         @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
         @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
       end
     end
 
-    wanted_size = (@queue_size - @queued_frames.length).div(channels) * channels
+    wanted_size = (@queue_size - @queued_frames.length).div(@channels) * @channels
     consumed_frames = frames.take(wanted_size)
     @queued_frames.concat(consumed_frames)
 
     if @queued_frames.length >= @queue_size and @free_buffers.any?
       current_buffer = @free_buffers.shift
 
-      FFI::MemoryPointer.new(sample_type, @queued_frames.length) do |frames|
-        frames.public_send(:"write_array_of_#{sample_type}", @queued_frames)
+      FFI::MemoryPointer.new(@sample_type, @queued_frames.length) do |frames|
+        frames.public_send(:"write_array_of_#{@sample_type}", @queued_frames)
         # stereo16 = 2 int16s (1 frame) = 1 sample
-        OpenAL.buffer_data(current_buffer, sample_format, frames, frames.size, sample_rate)
+        OpenAL.buffer_data(current_buffer, @sample_format, frames, frames.size, @sample_rate)
         @queued_frames.clear
       end
 
       FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |buffers|
         buffers.write_uint(current_buffer.to_native)
-        OpenAL.source_queue_buffers(source, buffers.count, buffers)
+        OpenAL.source_queue_buffers(@source, buffers.count, buffers)
       end
 
       @queued_buffers.push(current_buffer)
@@ -120,14 +123,14 @@ class Plaything
   protected
 
   def sample_offset
-    source.get(:sample_offset, Integer)
+    @source.get(:sample_offset, Integer)
   end
 
   def buffers_queued
-    source.get(:buffers_queued, Integer)
+    @source.get(:buffers_queued, Integer)
   end
 
   def buffers_processed
-    source.get(:buffers_processed, Integer)
+    @source.get(:buffers_processed, Integer)
   end
 end
