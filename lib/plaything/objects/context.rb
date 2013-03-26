@@ -3,8 +3,8 @@ class Plaything
     class Context < ManagedPointer
       def self.release(context)
         super do |pointer|
-          OpenAL.try(:make_context_current, nil)
-          OpenAL.try(:destroy_context, context)
+          OpenAL.make_context_current(nil)
+          OpenAL.destroy_context(context)
         end
       end
     end

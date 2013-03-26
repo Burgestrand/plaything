@@ -10,6 +10,8 @@ class Plaything
           else
             warn "No releaser for #{name}."
           end
+        rescue => e
+          warn "release for #{name} failed: #{e.message}."
         end
 
         def allocate(*args, &block)
