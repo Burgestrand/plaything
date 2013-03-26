@@ -8,7 +8,7 @@ require "plaything/openal"
 class Plaything
   Error = Class.new(StandardError)
 
-  def initialize(sample_type: :int16, sample_rate: 44100, channels: 2)
+  def initialize(options = { sample_type: :int16, sample_rate: 44100, channels: 2 })
     @device  = OpenAL.open_device(nil)
     raise Error, "Failed to open device" if @device.null?
 
@@ -22,9 +22,9 @@ class Plaything
       @source = OpenAL::Source.new(ptr.read_uint)
     end
 
-    @sample_type = sample_type
-    @sample_rate = Integer(sample_rate)
-    @channels    = Integer(channels)
+    @sample_type = options.fetch(:sample_type)
+    @sample_rate = Integer(options.fetch(:sample_rate))
+    @channels    = Integer(options.fetch(:channels))
 
     @sample_format = { [ :int16, 2 ] => :stereo16, }.fetch([@sample_type, @channels]) do
       raise TypeError, "unknown sample format for type [#{@sample_type}, #{@channels}]"
