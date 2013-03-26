@@ -24,7 +24,6 @@ class Plaything
 
     @sample_type = sample_type
     @sample_rate = Integer(sample_rate)
-    @sample_size = FFI.find_type(sample_type).size
     @channels    = Integer(channels)
 
     @sample_format = { [ :int16, 2 ] => :stereo16, }.fetch([@sample_type, @channels]) do
@@ -40,20 +39,22 @@ class Plaything
     @queued_buffers = []
     @queued_frames = []
 
-    @buffer_size = (sample_rate / channels) * 1
+    # 44100 int16s = 22050 frames = 0.5s (1 frame * 2 channels = 2 int16 = 1 sample = 1/44100 s)
+    @queue_size  = sample_rate * channels * 1
+    @buffer_size = sample_rate * 1
   end
 
-  attr_reader :sample_size, :sample_format, :sample_type, :sample_rate, :channels, :buffer_size
+  attr_reader :sample_format, :sample_type, :sample_rate, :channels
   attr_reader :device, :context, :source
 
   # Start playback of queued audio.
   def play
-    OpenAL.source_play(@source)
+    OpenAL.source_play(source)
   end
 
   # Pause playback of queued audio.
   def pause
-    OpenAL.source_pause(@source)
+    OpenAL.source_pause(source)
   end
 
   # Stop playback and clear queued audio.
@@ -64,12 +65,12 @@ class Plaything
 
   # Completely clear out the audio buffers, including the playing ones.
   def clear
-    @source.set(:buffer, 0)
+    source.set(:buffer, 0)
   end
 
   # @return [Integer] total size of current play queue.
   def queue_size
-    [(buffers_playing - 1) * buffer_size - buffer_position, 0].max
+    buffers_queued * @buffer_size - source.get(:sample_offset, Integer)
   end
 
   # Queue audio frames for playback.
@@ -78,28 +79,29 @@ class Plaything
   def <<(frames)
     if buffers_processed > 0
       FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
-        OpenAL.source_unqueue_buffers(@source, ptr.count, ptr)
+        OpenAL.source_unqueue_buffers(source, ptr.count, ptr)
         @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
         @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
       end
     end
 
-    consumed_frames = frames.take(buffer_size - @queued_frames.length)
+    wanted_size = (@queue_size - @queued_frames.length).div(channels) * channels
+    consumed_frames = frames.take(wanted_size)
     @queued_frames.concat(consumed_frames)
 
-    if @queued_frames.length >= buffer_size and @free_buffers.any?
+    if @queued_frames.length >= @queue_size and @free_buffers.any?
       current_buffer = @free_buffers.shift
-      outgoing_samples = @queued_frames.flatten
-      @queued_frames.clear
 
-      FFI::MemoryPointer.new(sample_type, outgoing_samples.length) do |samples|
-        samples.public_send(:"write_array_of_#{sample_type}", outgoing_samples)
-        OpenAL.buffer_data(current_buffer, sample_format, samples, samples.size, sample_rate)
+      FFI::MemoryPointer.new(sample_type, @queued_frames.length) do |frames|
+        frames.public_send(:"write_array_of_#{sample_type}", @queued_frames)
+        # stereo16 = 2 int16s (1 frame) = 1 sample
+        OpenAL.buffer_data(current_buffer, sample_format, frames, frames.size, sample_rate)
+        @queued_frames.clear
       end
 
       FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |buffers|
         buffers.write_uint(current_buffer.to_native)
-        OpenAL.source_queue_buffers(@source, buffers.count, buffers)
+        OpenAL.source_queue_buffers(source, buffers.count, buffers)
       end
 
       @queued_buffers.push(current_buffer)
@@ -110,24 +112,11 @@ class Plaything
 
   protected
 
-  def buffer_position
-    offset = @source.get(:sample_offset, Integer)
-    offset - buffers_processed * buffer_size
-  end
-
-  def buffers_playing
-    buffers_queued - buffers_processed
-  end
-
   def buffers_queued
-    @source.get(:buffers_queued, Integer)
+    source.get(:buffers_queued, Integer)
   end
 
   def buffers_processed
-    if @source.get(:source_state) == :playing
-      @source.get(:buffers_processed, Integer)
-    else
-      0
-    end
+    source.get(:buffers_processed, Integer)
   end
 end
