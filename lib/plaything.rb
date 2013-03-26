@@ -46,8 +46,8 @@ class Plaything
     @queued_frames = []
 
     # 44100 int16s = 22050 frames = 0.5s (1 frame * 2 channels = 2 int16 = 1 sample = 1/44100 s)
-    @queue_size  = @sample_rate * @channels * 1
-    @buffer_size = @sample_rate * 1
+    @queue_size  = @sample_rate * @channels * 1.0
+    @buffer_size = @queue_size / @channels
 
     @total_buffers_processed = 0
   end
@@ -83,7 +83,7 @@ class Plaything
 
   # @return [Integer] total size of current play queue.
   def queue_size
-    buffers_queued * @buffer_size - sample_offset
+    @source.get(:buffers_queued, Integer) * @buffer_size - sample_offset
   end
 
   # @return [Integer] how many audio drops since last call to drops.
@@ -95,7 +95,7 @@ class Plaything
   #
   # @param [Array<[ Channels… ]>] frames array of N-sized arrays of integers.
   def <<(frames)
-    if @source.get(:source_state) != :stopped && buffers_processed > 0
+    if buffers_processed > 0
       FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
         OpenAL.source_unqueue_buffers(@source, ptr.count, ptr)
         @total_buffers_processed += ptr.count
@@ -135,11 +135,11 @@ class Plaything
     @source.get(:sample_offset, Integer)
   end
 
-  def buffers_queued
-    @source.get(:buffers_queued, Integer)
-  end
-
   def buffers_processed
-    @source.get(:buffers_processed, Integer)
+    if not @source.stopped?
+      @source.get(:buffers_processed, Integer)
+    else
+      0
+    end
   end
 end
