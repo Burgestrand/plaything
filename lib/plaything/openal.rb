@@ -136,6 +136,17 @@ class Plaything
       :exponent_distance_clamped, 0xD006,
     ]
 
+    ## Utility
+    attach_function :alGetEnumValue, [ :string ], :int
+
+    enum_type(:parameter).to_h.each do |name, value|
+      real_name  = "AL_#{name.to_s.upcase}"
+      real_value = get_enum_value(real_name)
+      if real_value != -1 && value != real_value
+        raise NameError, "#{name} has value #{value}, should be #{real_value}"
+      end
+    end
+
     ## Listeners
     attach_function :alListenerf, [ :parameter, :float ], :void
 
