@@ -42,6 +42,8 @@ class Plaything
     # 44100 int16s = 22050 frames = 0.5s (1 frame * 2 channels = 2 int16 = 1 sample = 1/44100 s)
     @queue_size  = sample_rate * channels * 1
     @buffer_size = sample_rate * 1
+
+    @total_buffers_processed = 0
   end
 
   attr_reader :sample_format, :sample_type, :sample_rate, :channels
@@ -64,11 +66,12 @@ class Plaything
     @free_buffers.concat(@queued_buffers)
     @queued_buffers.clear
     @queued_frames.clear
+    @total_buffers_processed = 0
   end
 
-  # Completely clear out the audio buffers, including the playing ones.
-  def clear
-    source.set(:buffer, 0)
+  # @return [Rational] how many seconds of audio that has been played since last clear.
+  def position
+    Rational(@total_buffers_processed * @buffer_size + sample_offset, sample_rate)
   end
 
   # @return [Integer] total size of current play queue.
@@ -83,6 +86,7 @@ class Plaything
     if source.get(:source_state) != :stopped && buffers_processed > 0
       FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
         OpenAL.source_unqueue_buffers(source, ptr.count, ptr)
+        @total_buffers_processed += ptr.count
         @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
         @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
       end
