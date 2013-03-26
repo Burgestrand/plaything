@@ -66,6 +66,7 @@ class Plaything
 
     attach_function :alSourcePlay, [ Source ], :void
     attach_function :alSourcePause, [ Source ], :void
+    attach_function :alSourceStop, [ Source ], :void
 
     attach_function :alSourceQueueBuffers, [ Source, :sizei, :pointer ], :void
     attach_function :alSourceUnqueueBuffers, [ Source, :sizei, :pointer ], :void
