@@ -46,8 +46,10 @@ class Plaything
     @queued_frames = []
 
     # 44100 int16s = 22050 frames = 0.5s (1 frame * 2 channels = 2 int16 = 1 sample = 1/44100 s)
-    @queue_size  = @sample_rate * @channels * 1.0
-    @buffer_size = @queue_size / @channels
+    @buffer_size  = @sample_rate * @channels * 1.0
+    # how many samples there are in each buffer, irrespective of channels
+    @buffer_length = @buffer_size / @channels
+    # buffer_duration = buffer_length / sample_rate
 
     @total_buffers_processed = 0
   end
@@ -78,12 +80,12 @@ class Plaything
 
   # @return [Rational] how many seconds of audio that has been played.
   def position
-    Rational(@total_buffers_processed * @buffer_size + sample_offset, @sample_rate)
+    Rational(@total_buffers_processed * @buffer_length + sample_offset, @sample_rate)
   end
 
   # @return [Integer] total size of current play queue.
   def queue_size
-    @source.get(:buffers_queued, Integer) * @buffer_size - sample_offset
+    @source.get(:buffers_queued, Integer) * @buffer_length - sample_offset
   end
 
   # @return [Integer] how many audio drops since last call to drops.
@@ -104,11 +106,11 @@ class Plaything
       end
     end
 
-    wanted_size = (@queue_size - @queued_frames.length).div(@channels) * @channels
+    wanted_size = (@buffer_size - @queued_frames.length).div(@channels) * @channels
     consumed_frames = frames.take(wanted_size)
     @queued_frames.concat(consumed_frames)
 
-    if @queued_frames.length >= @queue_size and @free_buffers.any?
+    if @queued_frames.length >= @buffer_size and @free_buffers.any?
       current_buffer = @free_buffers.shift
 
       FFI::MemoryPointer.new(@sample_type, @queued_frames.length) do |frames|
