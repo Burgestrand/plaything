@@ -53,16 +53,20 @@ class Plaything
   end
 
   # Start playback of queued audio.
+  #
+  # @note You must continue to supply audio, or playback will cease.
   def play
     OpenAL.source_play(@source)
   end
 
-  # Pause playback of queued audio.
+  # Pause playback of queued audio. Playback will resume from current position when {#play} is called.
   def pause
     OpenAL.source_pause(@source)
   end
 
   # Stop playback and clear any queued audio.
+  #
+  # @note All audio queues are completely cleared, and {#position} is reset.
   def stop
     OpenAL.source_stop(@source)
     @source.set(:buffer, 0)
@@ -72,7 +76,7 @@ class Plaything
     @total_buffers_processed = 0
   end
 
-  # @return [Rational] how many seconds of audio that has been played since last clear.
+  # @return [Rational] how many seconds of audio that has been played.
   def position
     Rational(@total_buffers_processed * @buffer_size + sample_offset, @sample_rate)
   end
@@ -80,6 +84,11 @@ class Plaything
   # @return [Integer] total size of current play queue.
   def queue_size
     buffers_queued * @buffer_size - sample_offset
+  end
+
+  # @return [Integer] how many audio drops since last call to drops.
+  def drops
+    0
   end
 
   # Queue audio frames for playback.
