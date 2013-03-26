@@ -57,10 +57,13 @@ class Plaything
     OpenAL.source_pause(source)
   end
 
-  # Stop playback and clear queued audio.
+  # Stop playback and clear any queued audio.
   def stop
-    pause
-    clear
+    OpenAL.source_stop(source)
+    source.set(:buffer, 0)
+    @free_buffers.concat(@queued_buffers)
+    @queued_buffers.clear
+    @queued_frames.clear
   end
 
   # Completely clear out the audio buffers, including the playing ones.
@@ -70,14 +73,14 @@ class Plaything
 
   # @return [Integer] total size of current play queue.
   def queue_size
-    buffers_queued * @buffer_size - source.get(:sample_offset, Integer)
+    buffers_queued * @buffer_size - sample_offset
   end
 
   # Queue audio frames for playback.
   #
   # @param [Array<[ Channels… ]>] frames array of N-sized arrays of integers.
   def <<(frames)
-    if buffers_processed > 0
+    if source.get(:source_state) != :stopped && buffers_processed > 0
       FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
         OpenAL.source_unqueue_buffers(source, ptr.count, ptr)
         @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
@@ -111,6 +114,10 @@ class Plaything
   end
 
   protected
+
+  def sample_offset
+    source.get(:sample_offset, Integer)
+  end
 
   def buffers_queued
     source.get(:buffers_queued, Integer)
