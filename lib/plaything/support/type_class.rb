@@ -3,15 +3,14 @@ class Plaything
     def self.TypeClass(type)
       Class.new do
         extend FFI::DataConverter
-        @@type = type
+
+        define_singleton_method(:type) do
+          type
+        end
 
         class << self
           def inherited(other)
             other.native_type(type)
-          end
-
-          def type
-            @@type
           end
 
           def to_native(source, ctx)
