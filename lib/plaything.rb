@@ -1,3 +1,4 @@
+require "monitor"
 require "ffi"
 require "plaything/version"
 require "plaything/monkey_patches/ffi"
@@ -52,40 +53,52 @@ class Plaything
     # buffer_duration = buffer_length / sample_rate
 
     @total_buffers_processed = 0
+
+    @monitor = Monitor.new
   end
 
   # Start playback of queued audio.
   #
   # @note You must continue to supply audio, or playback will cease.
   def play
-    OpenAL.source_play(@source)
+    synchronize do
+      OpenAL.source_play(@source)
+    end
   end
 
   # Pause playback of queued audio. Playback will resume from current position when {#play} is called.
   def pause
-    OpenAL.source_pause(@source)
+    synchronize do
+      OpenAL.source_pause(@source)
+    end
   end
 
   # Stop playback and clear any queued audio.
   #
   # @note All audio queues are completely cleared, and {#position} is reset.
   def stop
-    OpenAL.source_stop(@source)
-    @source.detach_buffers
-    @free_buffers.concat(@queued_buffers)
-    @queued_buffers.clear
-    @queued_frames.clear
-    @total_buffers_processed = 0
+    synchronize do
+      OpenAL.source_stop(@source)
+      @source.detach_buffers
+      @free_buffers.concat(@queued_buffers)
+      @queued_buffers.clear
+      @queued_frames.clear
+      @total_buffers_processed = 0
+    end
   end
 
   # @return [Rational] how many seconds of audio that has been played.
   def position
-    Rational(@total_buffers_processed * @buffer_length + sample_offset, @sample_rate)
+    synchronize do
+      Rational(@total_buffers_processed * @buffer_length + sample_offset, @sample_rate)
+    end
   end
 
   # @return [Integer] total size of current play queue.
   def queue_size
-    @source.get(:buffers_queued, Integer) * @buffer_length - sample_offset
+    synchronize do
+      @source.get(:buffers_queued, Integer) * @buffer_length - sample_offset
+    end
   end
 
   # @return [Integer] how many audio drops since last call to drops.
@@ -97,41 +110,47 @@ class Plaything
   #
   # @param [Array<[ Channels… ]>] frames array of N-sized arrays of integers.
   def <<(frames)
-    if buffers_processed > 0
-      FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
-        OpenAL.source_unqueue_buffers(@source, ptr.count, ptr)
-        @total_buffers_processed += ptr.count
-        @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
-        @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
+    synchronize do
+      if buffers_processed > 0
+        FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
+          OpenAL.source_unqueue_buffers(@source, ptr.count, ptr)
+          @total_buffers_processed += ptr.count
+          @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
+          @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
+        end
       end
+
+      wanted_size = (@buffer_size - @queued_frames.length).div(@channels) * @channels
+      consumed_frames = frames.take(wanted_size)
+      @queued_frames.concat(consumed_frames)
+
+      if @queued_frames.length >= @buffer_size and @free_buffers.any?
+        current_buffer = @free_buffers.shift
+
+        FFI::MemoryPointer.new(@sample_type, @queued_frames.length) do |frames|
+          frames.public_send(:"write_array_of_#{@sample_type}", @queued_frames)
+          # stereo16 = 2 int16s (1 frame) = 1 sample
+          OpenAL.buffer_data(current_buffer, @sample_format, frames, frames.size, @sample_rate)
+          @queued_frames.clear
+        end
+
+        FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |buffers|
+          buffers.write_uint(current_buffer.to_native)
+          OpenAL.source_queue_buffers(@source, buffers.count, buffers)
+        end
+
+        @queued_buffers.push(current_buffer)
+      end
+
+      consumed_frames.length
     end
-
-    wanted_size = (@buffer_size - @queued_frames.length).div(@channels) * @channels
-    consumed_frames = frames.take(wanted_size)
-    @queued_frames.concat(consumed_frames)
-
-    if @queued_frames.length >= @buffer_size and @free_buffers.any?
-      current_buffer = @free_buffers.shift
-
-      FFI::MemoryPointer.new(@sample_type, @queued_frames.length) do |frames|
-        frames.public_send(:"write_array_of_#{@sample_type}", @queued_frames)
-        # stereo16 = 2 int16s (1 frame) = 1 sample
-        OpenAL.buffer_data(current_buffer, @sample_format, frames, frames.size, @sample_rate)
-        @queued_frames.clear
-      end
-
-      FFI::MemoryPointer.new(OpenAL::Buffer, 1) do |buffers|
-        buffers.write_uint(current_buffer.to_native)
-        OpenAL.source_queue_buffers(@source, buffers.count, buffers)
-      end
-
-      @queued_buffers.push(current_buffer)
-    end
-
-    consumed_frames.length
   end
 
   protected
+
+  def synchronize
+    @monitor.synchronize { return yield }
+  end
 
   def sample_offset
     @source.get(:sample_offset, Integer)
