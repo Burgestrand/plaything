@@ -24,12 +24,6 @@ class Plaything
           def size
             type.size
           end
-
-          def extract(pointer, count)
-            pointer.read_array_of_type(self, :read_uint, count).map do |uint|
-              new(uint)
-            end
-          end
         end
 
         def initialize(value)
