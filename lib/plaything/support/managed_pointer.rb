@@ -13,13 +13,6 @@ class Plaything
         rescue => e
           warn "release for #{name} failed: #{e.message}."
         end
-
-        def allocate(*args, &block)
-          pointer = FFI::MemoryPointer.new(*args)
-          yield pointer
-          pointer.autorelease = false
-          new(FFI::Pointer.new(pointer))
-        end
       end
     end
   end
