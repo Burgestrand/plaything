@@ -5,6 +5,8 @@ class Plaything
     ffi_lib ["openal", "/System/Library/Frameworks/OpenAL.framework/Versions/Current/OpenAL"]
 
     typedef :pointer, :attributes
+    typedef :pointer, :source_array
+    typedef :pointer, :buffer_array
     typedef :int, :sizei
 
     # Errors
@@ -61,15 +63,15 @@ class Plaything
     attach_function :alcMakeContextCurrent, [ Context ], :bool
 
     # Sources
-    attach_function :alGenSources, [ :sizei, :pointer ], :void
-    attach_function :alDeleteSources, [ :sizei, :pointer ], :void
+    attach_function :alGenSources, [ :sizei, :source_array ], :void
+    attach_function :alDeleteSources, [ :sizei, :source_array ], :void
 
     attach_function :alSourcePlay, [ Source ], :void
     attach_function :alSourcePause, [ Source ], :void
     attach_function :alSourceStop, [ Source ], :void
 
-    attach_function :alSourceQueueBuffers, [ Source, :sizei, :pointer ], :void
-    attach_function :alSourceUnqueueBuffers, [ Source, :sizei, :pointer ], :void
+    attach_function :alSourceQueueBuffers, [ Source, :sizei, :buffer_array ], :void
+    attach_function :alSourceUnqueueBuffers, [ Source, :sizei, :buffer_array ], :void
 
     # Buffers
     enum :format, [
@@ -78,8 +80,8 @@ class Plaything
       :stereo8, 0x1102,
       :stereo16, 0x1103,
     ]
-    attach_function :alGenBuffers, [ :sizei, :pointer ], :void
-    attach_function :alDeleteBuffers, [ :sizei, :pointer ], :void
+    attach_function :alGenBuffers, [ :sizei, :buffer_array ], :void
+    attach_function :alDeleteBuffers, [ :sizei, :buffer_array ], :void
 
     attach_function :alBufferData, [ Buffer, :format, :pointer, :sizei, :sizei ], :void
 
