@@ -8,14 +8,13 @@ require "plaything/openal"
 
 class Plaything
   Error = Class.new(StandardError)
+  Formats = {
+    [ :int16, 1 ] => :mono16,
+    [ :int16, 2 ] => :stereo16,
+  }
 
   # Open the default output device and prepare it for playback.
-  #
-  # @param [Hash] options
-  # @option options [Symbol] sample_type (:int16)
-  # @option options [Integer] sample_rate (44100)
-  # @option options [Integer] channels (2)
-  def initialize(options = { sample_type: :int16, sample_rate: 44100, channels: 2 })
+  def initialize(format = { sample_rate: 44100, sample_type: :int16, channels: 2 })
     @device  = OpenAL.open_device(nil)
     raise Error, "Failed to open device" if @device.null?
 
@@ -29,14 +28,6 @@ class Plaything
       @source = OpenAL::Source.new(ptr.read_uint)
     end
 
-    @sample_type = options.fetch(:sample_type)
-    @sample_rate = Integer(options.fetch(:sample_rate))
-    @channels    = Integer(options.fetch(:channels))
-
-    @sample_format = { [ :int16, 2 ] => :stereo16, }.fetch([@sample_type, @channels]) do
-      raise TypeError, "unknown sample format for type [#{@sample_type}, #{@channels}]"
-    end
-
     FFI::MemoryPointer.new(OpenAL::Buffer, 3) do |ptr|
       OpenAL.gen_buffers(ptr.count, ptr)
       @buffers = OpenAL::Buffer.extract(ptr, ptr.count)
@@ -46,31 +37,24 @@ class Plaything
     @queued_buffers = []
     @queued_frames = []
 
-    # 44100 int16s = 22050 frames = 0.5s (1 frame * 2 channels = 2 int16 = 1 sample = 1/44100 s)
-    @buffer_size  = @sample_rate * @channels * 1.0
-    # how many samples there are in each buffer, irrespective of channels
-    @buffer_length = @buffer_size / @channels
-    # buffer_duration = buffer_length / sample_rate
-
+    @drops = 0
     @total_buffers_processed = 0
 
     @monitor = Monitor.new
+
+    self.format = format
   end
 
   # Start playback of queued audio.
   #
   # @note You must continue to supply audio, or playback will cease.
   def play
-    synchronize do
-      OpenAL.source_play(@source)
-    end
+    synchronize { @source.play }
   end
 
   # Pause playback of queued audio. Playback will resume from current position when {#play} is called.
   def pause
-    synchronize do
-      OpenAL.source_pause(@source)
-    end
+    synchronize { @source.pause }
   end
 
   # Stop playback and clear any queued audio.
@@ -78,7 +62,7 @@ class Plaything
   # @note All audio queues are completely cleared, and {#position} is reset.
   def stop
     synchronize do
-      OpenAL.source_stop(@source)
+      @source.stop
       @source.detach_buffers
       @free_buffers.concat(@queued_buffers)
       @queued_buffers.clear
@@ -90,35 +74,96 @@ class Plaything
   # @return [Rational] how many seconds of audio that has been played.
   def position
     synchronize do
-      Rational(@total_buffers_processed * @buffer_length + sample_offset, @sample_rate)
+      total_samples_processed = @total_buffers_processed * @buffer_length
+      Rational(total_samples_processed + @source.sample_offset, @sample_rate)
     end
   end
 
   # @return [Integer] total size of current play queue.
   def queue_size
     synchronize do
-      @source.get(:buffers_queued, Integer) * @buffer_length - sample_offset
+      @source.buffers_queued * @buffer_length - @source.sample_offset
     end
   end
 
   # @return [Integer] how many audio drops since last call to drops.
   def drops
-    0
+    @drops.tap { @drops = 0 }
+  end
+
+  # @return [Hash] current audio format in the queues
+  def format
+    {
+      sample_rate: @sample_rate,
+      sample_type: @sample_type,
+      channels: @channels,
+    }
+  end
+
+  # Change the format.
+  #
+  # @note if there is any queued audio it will be cleared,
+  #       and the playback will be stopped.
+  #
+  # @param [Hash] format
+  # @option format [Symbol] sample_type only :int16 available
+  # @option format [Integer] sample_rate
+  # @option format [Integer] channels 1 or 2
+  def format=(format)
+    synchronize do
+      if @source.playing?
+        stop
+        @drops += 1
+      end
+
+      @sample_type = format.fetch(:sample_type)
+      @sample_rate = Integer(format.fetch(:sample_rate))
+      @channels    = Integer(format.fetch(:channels))
+
+      @sample_format = Formats.fetch([@sample_type, @channels]) do
+        raise TypeError, "unknown sample format for type [#{@sample_type}, #{@channels}]"
+      end
+
+      # 44100 int16s = 22050 frames = 0.5s (1 frame * 2 channels = 2 int16 = 1 sample = 1/44100 s)
+      @buffer_size  = @sample_rate * @channels * 1.0
+      # how many samples there are in each buffer, irrespective of channels
+      @buffer_length = @buffer_size / @channels
+      # buffer_duration = buffer_length / sample_rate
+    end
   end
 
   # Queue audio frames for playback.
   #
-  # @param [Array<[ Channels… ]>] frames array of N-sized arrays of integers.
+  # @note this method is here for backwards-compatibility,
+  #       and does not support changing format automatically.
+  #       You should use {#stream} instead.
+  #
+  # @param [Array<Integer>] array of interleaved audio samples.
+  # @return (see #stream)
   def <<(frames)
+    stream(frames, format)
+  end
+
+  # Queue audio frames for playback.
+  #
+  # @param [Array<Integer>] array of interleaved audio samples.
+  # @param [Hash] format
+  # @option format [Symbol] :sample_type should be :int16
+  # @option format [Integer] :sample_rate
+  # @option format [Integer] :channels
+  # @return [Integer] number of frames consumed (consumed_samples / channels), a multiple of channels
+  def stream(frames, frame_format)
     synchronize do
-      if buffers_processed > 0
-        FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
+      if @source.playing? and @source.buffers_processed > 0
+        FFI::MemoryPointer.new(OpenAL::Buffer, @source.buffers_processed) do |ptr|
           OpenAL.source_unqueue_buffers(@source, ptr.count, ptr)
           @total_buffers_processed += ptr.count
           @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
           @queued_buffers.delete_if { |buffer| @free_buffers.include?(buffer) }
         end
       end
+
+      self.format = frame_format if frame_format != format
 
       wanted_size = (@buffer_size - @queued_frames.length).div(@channels) * @channels
       consumed_frames = frames.take(wanted_size)
@@ -142,7 +187,7 @@ class Plaything
         @queued_buffers.push(current_buffer)
       end
 
-      consumed_frames.length
+      consumed_frames.length / @channels
     end
   end
 
@@ -150,17 +195,5 @@ class Plaything
 
   def synchronize
     @monitor.synchronize { return yield }
-  end
-
-  def sample_offset
-    @source.get(:sample_offset, Integer)
-  end
-
-  def buffers_processed
-    if not @source.stopped?
-      @source.get(:buffers_processed, Integer)
-    else
-      0
-    end
   end
 end

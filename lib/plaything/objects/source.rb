@@ -3,6 +3,37 @@ class Plaything
     class Source < TypeClass(FFI::Type::UINT)
       include OpenAL::Paramable(:source)
 
+      # Start playback.
+      def play
+        OpenAL.source_play(self)
+      end
+
+      # Pause playback.
+      def pause
+        OpenAL.source_pause(self)
+      end
+
+      # Stop playback and rewind the source.
+      def stop
+        OpenAL.source_stop(self)
+      end
+
+      # @return [Integer] how many samples (/ channels) that have been played from the queued buffers
+      def sample_offset
+        get(:sample_offset, Integer)
+      end
+
+      # @return [Integer] number of queued buffers.
+      def buffers_queued
+        get(:buffers_queued, Integer)
+      end
+
+      # @note returns {#buffers_queued} if source is not playing!
+      # @return [Integer] number of processed buffers.
+      def buffers_processed
+        get(:buffers_processed, Integer)
+      end
+
       # Detach all queued or attached buffers.
       #
       # @note all buffers must be processed for this operation to succeed.
