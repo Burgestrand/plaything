@@ -45,6 +45,9 @@ class Plaything
     self.format = format
   end
 
+  # @return [Plaything::OpenAL::Source] the back-end audio source.
+  attr_reader :source
+
   # Start playback of queued audio.
   #
   # @note You must continue to supply audio, or playback will cease.
