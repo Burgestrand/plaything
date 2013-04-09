@@ -1,6 +1,18 @@
 # Plaything
 
-Blast raw PCM audio through your speakers using OpenAL.
+> OpenAL is a cross-platform 3D audio API appropriate for use with gaming applications and many other types of audio applications.
+
+Plaything is tiny API wrapper around OpenAL, and makes it easy to play raw (PCM) streaming audio through your speakers.
+
+Plaything was initially written to support audio playback from the [spotify gem](http://rubygems.org/gems/spotify).
+
+
+
+## Note about the OpenAL bindings
+
+Plaything contains bindings to a subset of the OpenAL API, just enough to cover the necessary streaming functionality. With little further work, the OpenAL bindings could be extracted and further developed indepdendently of Plaything.
+
+Additionally, the OpenAL streaming source is retrievable from Plaything, and allows you to modify parameters on the playback source, such as pitch, gain, and anything else OpenAL allows you to change.
 
 ## License
 

@@ -6,6 +6,24 @@ require "plaything/support"
 require "plaything/objects"
 require "plaything/openal"
 
+# Plaything is tiny API wrapper around OpenAL, and makes it easy to play raw
+# (PCM) streaming audio through your speakers.
+#
+# API consist of a few key methods available on the Plaything instance.
+#
+# - {#play}, {#pause}, {#stop} — controls source playback state. If the source
+#   runs out of audio to play, it will forcefully stop playback.
+# - {#position}, can be used to retrieve playback position.
+# - {#queue_size}, {#drops} — status information; should be used by the streaming
+#   source to improve playback experience.
+# - {#format=} — allows you to change format, even during playback.
+# - {#stream}, {#<<} — fills the audio buffers with PCM audio.
+#
+# Internally, Plaything will queue and unqueue buffers as they are played during
+# streaming. When a sufficient amount of audio has been fed into plaything, the
+# audio will be queued on the source and plaything can accept additional audio.
+#
+# Plaything is considered thread-safe.
 class Plaything
   Error = Class.new(StandardError)
   Formats = {
@@ -91,16 +109,20 @@ class Plaything
 
   # @return [Integer] how many audio drops since last call to drops.
   def drops
-    @drops.tap { @drops = 0 }
+    synchronize do
+      @drops.tap { @drops = 0 }
+    end
   end
 
   # @return [Hash] current audio format in the queues
   def format
-    {
-      sample_rate: @sample_rate,
-      sample_type: @sample_type,
-      channels: @channels,
-    }
+    synchronize do
+      {
+        sample_rate: @sample_rate,
+        sample_type: @sample_type,
+        channels: @channels,
+      }
+    end
   end
 
   # Change the format.
