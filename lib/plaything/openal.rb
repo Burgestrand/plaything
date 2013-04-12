@@ -122,8 +122,8 @@ class Plaything
       :source_type, 0x1027,
 
       :frequency, 0x2001,
-      :bits, 0x2002,
-      :channels, 0x2003,
+      # :bits, 0x2002,
+      # :channels, 0x2003,
       :size, 0x2004,
       :unused, 0x2010,
       :pending, 0x2011,
@@ -140,14 +140,6 @@ class Plaything
 
     ## Utility
     attach_function :alGetEnumValue, [ :string ], :int
-
-    enum_type(:parameter).to_h.each do |name, value|
-      real_name  = "AL_#{name.to_s.upcase}"
-      real_value = get_enum_value(real_name)
-      if real_value != -1 && value != real_value
-        raise NameError, "#{name} has value #{value}, should be #{real_value}"
-      end
-    end
 
     ## Listeners
     attach_function :alListenerf, [ :parameter, :float ], :void
