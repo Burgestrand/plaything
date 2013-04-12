@@ -20,7 +20,8 @@ class Plaything
       :invalid_operation, 0xA004,
       :out_of_memory, 0xA005,
     ]
-    attach_function :get_error, :alGetError, [ ], :error
+    attach_function :alGetError, [ ], :error
+    attach_function :alcGetError, [ ], :error
 
     # Overridden for three purposes.
     #
@@ -35,14 +36,15 @@ class Plaything
         .gsub(/(?<!\A)\p{Lu}/u, '_\0')
         .downcase
       bang_name = "#{ruby_name}!"
+      error_method = :"#{c_name.to_s[/\Aalc?/, 0]}GetError"
 
       super(ruby_name, c_name, params, returns, options)
       alias_method(bang_name, ruby_name)
 
       define_method(ruby_name) do |*args, &block|
-        get_error # clear error
+        public_send(error_method) # clear error
         public_send(bang_name, *args, &block).tap do
-          error = get_error
+          error = public_send(error_method) # clear error
           unless error == :no_error
             raise Error, "#{ruby_name} failed with #{error}"
           end
