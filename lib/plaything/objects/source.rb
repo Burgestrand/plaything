@@ -5,17 +5,31 @@ class Plaything
 
       # Start playback.
       def play
+        @should_be_playing = true
         OpenAL.source_play(self)
       end
 
       # Pause playback.
       def pause
+        @should_be_playing = false
         OpenAL.source_pause(self)
       end
 
       # Stop playback and rewind the source.
       def stop
+        @should_be_playing = false
         OpenAL.source_stop(self)
+      end
+
+      # @return [Boolean] true if audio should be playing (#play has been called,
+      #                        but not #stop or #pause), but isn’t playing
+      def starved?
+        should_be_playing? and not playing?
+      end
+
+      # @return [Boolean] true if source should currently be playing audio
+      def should_be_playing?
+        @should_be_playing
       end
 
       # @return [Integer] how many samples (/ channels) that have been played from the queued buffers
