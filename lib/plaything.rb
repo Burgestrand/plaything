@@ -14,7 +14,7 @@ require "plaything/openal"
 # - {#play}, {#pause}, {#stop} — controls source playback state. If the source
 #   runs out of audio to play, it will forcefully stop playback.
 # - {#position}, can be used to retrieve playback position.
-# - {#queue_size}, {#drops} — status information; should be used by the streaming
+# - {#queue_size}, {#drops}, {#starved?} — status information; should be used by the streaming
 #   source to improve playback experience.
 # - {#format=} — allows you to change format, even during playback.
 # - {#stream}, {#<<} — fills the audio buffers with PCM audio.
@@ -55,7 +55,7 @@ class Plaything
     @queued_buffers = []
     @queued_frames = []
 
-    @drops = 0
+    @starved = false
     @total_buffers_processed = 0
 
     @monitor = Monitor.new
@@ -70,7 +70,10 @@ class Plaything
   #
   # @note You must continue to supply audio, or playback will cease.
   def play
-    synchronize { @source.play }
+    synchronize do
+      @starved = false
+      @source.play
+    end
   end
 
   # Pause playback of queued audio. Playback will resume from current position when {#play} is called.
@@ -107,11 +110,29 @@ class Plaything
     end
   end
 
-  # @return [Integer] how many audio drops since last call to drops.
+  # If audio is starved, and it has not been previously seen as starved, it
+  # will return 1. However, if audio is starved and {#drops} has already
+  # reported it as starved, it will return 0. Finally, if audio is not starved,
+  # it always returns 0.
+  #
+  # @return [Integer] number of drops since previous call to {#drops}.
   def drops
-    synchronize do
-      @drops.tap { @drops = 0 }
+    if starved?
+      if @starved_toggle
+        0
+      else
+        @starved_toggle = true
+        1
+      end
+    else
+      @starved_toggle = false
+      0
     end
+  end
+
+  # @return [Boolean] true if audio stream has starved
+  def starved?
+    synchronize { @starved or @source.starved? }
   end
 
   # @return [Hash] current audio format in the queues
@@ -137,8 +158,8 @@ class Plaything
   def format=(format)
     synchronize do
       if @source.playing?
-        stop
-        @drops += 1
+        stop # clear audio buffers
+        @starved = true
       end
 
       @sample_type = format.fetch(:sample_type)
@@ -179,8 +200,8 @@ class Plaything
   # @return [Integer] number of frames consumed (consumed_samples / channels), a multiple of channels
   def stream(frames, frame_format)
     synchronize do
-      if @source.playing? and @source.buffers_processed > 0
-        FFI::MemoryPointer.new(OpenAL::Buffer, @source.buffers_processed) do |ptr|
+      if buffers_processed > 0
+        FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
           OpenAL.source_unqueue_buffers(@source, ptr.count, ptr)
           @total_buffers_processed += ptr.count
           @free_buffers.concat OpenAL::Buffer.extract(ptr, ptr.count)
@@ -217,6 +238,14 @@ class Plaything
   end
 
   protected
+
+  def buffers_processed
+    if @source.playing?
+      @source.buffers_processed
+    else
+      @source.sample_offset.div(@buffer_length)
+    end
+  end
 
   def synchronize
     @monitor.synchronize { return yield }
