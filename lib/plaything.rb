@@ -192,13 +192,14 @@ class Plaything
 
   # Queue audio frames for playback.
   #
-  # @param [Array<Integer>] array of interleaved audio samples.
   # @param [Hash] format
   # @option format [Symbol] :sample_type should be :int16
   # @option format [Integer] :sample_rate
   # @option format [Integer] :channels
+  # @param [FFI::Pointer<Integer] frames pointer to array of interleaved samples
+  # @param [Integer] num_frames number of frames available in frames (same as num_samples / channels)
   # @return [Integer] number of frames consumed (consumed_samples / channels), a multiple of channels
-  def stream(frames, frame_format)
+  def stream(frame_format, frames, num_frames)
     synchronize do
       if buffers_processed > 0
         FFI::MemoryPointer.new(OpenAL::Buffer, buffers_processed) do |ptr|
@@ -212,7 +213,9 @@ class Plaything
       self.format = frame_format if frame_format != format
 
       wanted_size = (@buffer_size - @queued_frames.length).div(@channels) * @channels
-      consumed_frames = frames.take(wanted_size)
+      available_size = num_frames * @channels
+      readable_size = wanted_size > available_size ? available_size : wanted_size
+      consumed_frames = frames.send(:"read_array_of_#{@sample_type}", readable_size)
       @queued_frames.concat(consumed_frames)
 
       if @queued_frames.length >= @buffer_size and @free_buffers.any?
